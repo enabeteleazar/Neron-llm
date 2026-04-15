@@ -1,41 +1,77 @@
-"""Strategy layer — decides execution mode automatically based on task.
+"""neron_llm/core/strategy.py
+Strategy layer — decides execution mode automatically based on task type.
 
-The strategy engine determines whether to use single, parallel, or race
-mode when the caller does not specify one explicitly.
+v2.0 changes:
+  • task_type coverage extended: reasoning, agent now mapped
+  • strategy overrides readable from neron.yaml → strategy: section
+  • decide() signature unchanged (backward compat)
 """
-
 from __future__ import annotations
 
 import logging
 
 logger = logging.getLogger("neron_llm.strategy")
 
-# Task → mode mapping. Override via neron.yaml if needed.
-TASK_STRATEGIES: dict[str, str] = {
-    "code": "parallel",
-    "chat": "race",
-    "fast": "single",
-    "summary": "single",
-    "default": "single",
+# ── Built-in task → mode defaults ─────────────────────────────────────────────
+
+_DEFAULT_TASK_STRATEGIES: dict[str, str] = {
+    # public bus task_types
+    "code":      "parallel",   # run on all providers, pick best
+    "reasoning": "single",     # depth over breadth
+    "chat":      "race",       # first answer wins — low latency
+    "agent":     "single",     # controlled, memory-augmented future
+    # internal
+    "fast":      "single",
+    "summary":   "single",
+    "default":   "single",
 }
 
 
 class StrategyEngine:
-    """Decides execution mode based on task type or explicit override."""
+    """Decides execution mode based on task type or explicit override.
+
+    Config override (neron.yaml → strategy:):
+        strategy:
+          code:      parallel
+          reasoning: single
+          chat:      race
+          agent:     single
+    """
+
+    def __init__(self) -> None:
+        # Load yaml overrides at construction — config is cached by lru_cache
+        self._strategies = dict(_DEFAULT_TASK_STRATEGIES)
+        try:
+            from neron_llm.config import load_config
+            cfg_strategies: dict = load_config().get("strategy", {})
+            valid_modes = {"single", "parallel", "race"}
+            for task, mode in cfg_strategies.items():
+                if mode in valid_modes:
+                    self._strategies[task] = mode
+                    logger.debug("Strategy override: task='%s' → mode='%s'", task, mode)
+                else:
+                    logger.warning(
+                        "Strategy: invalid mode '%s' for task '%s' in config — ignored",
+                        mode, task,
+                    )
+        except Exception as exc:
+            logger.warning("Strategy: could not load yaml overrides: %s", exc)
+
+        logger.debug("StrategyEngine initialized — table: %s", self._strategies)
 
     def decide(self, task: str | None = None, mode: str | None = None) -> str:
         """Return the execution mode.
 
-        Priority: explicit mode > task-based strategy > 'single'.
+        Priority: explicit mode override > task-based strategy > 'single'.
         """
         if mode:
-            logger.debug("Strategy: explicit mode=%s", mode)
+            logger.debug("Strategy: explicit mode='%s'", mode)
             return mode
 
-        if task and task in TASK_STRATEGIES:
-            decided = TASK_STRATEGIES[task]
+        if task and task in self._strategies:
+            decided = self._strategies[task]
             logger.debug("Strategy: task='%s' → mode='%s'", task, decided)
             return decided
 
-        logger.debug("Strategy: fallback → mode='single'")
+        logger.debug("Strategy: unknown task='%s' → fallback mode='single'", task)
         return "single"

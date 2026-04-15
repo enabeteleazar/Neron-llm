@@ -28,6 +28,10 @@ ANTHROPIC_VERSION = "2023-06-01"
 class ClaudeProvider(BaseProvider):
     """Async provider for the Anthropic Claude API."""
 
+    def is_available(self) -> bool:
+        import os
+        return bool(os.getenv("ANTHROPIC_API_KEY"))
+
     def __init__(self):
         cfg = get_llm_config()
         self.api_key: str = (
