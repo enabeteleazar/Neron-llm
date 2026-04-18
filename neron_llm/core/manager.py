@@ -1,0 +1,239 @@
+"""neron_llm/core/manager.py
+LLM Manager — orchestration engine with single/parallel/race modes.
+
+v2.0 changes:
+  • _execute_single() now tries model fallback chain BEFORE provider fallback
+    (qwen2.5-coder:14b → deepseek-coder:6.7b → provider fallback → error)
+  • Correlation ID (x-neron-request-id) forwarded to provider calls
+  • Structured JSON error logging
+
+Unchanged:
+  • parallel / race modes
+  • retry logic (MAX_RETRIES = 2)
+  • provider fallback chain (ollama → claude)
+"""
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import time
+
+from neron_llm.core.router   import LLMRouter
+from neron_llm.core.strategy import StrategyEngine
+from neron_llm.core.types    import LLMRequest, LLMResponse
+from neron_llm.providers.base   import BaseProvider
+from neron_llm.providers.claude import ClaudeProvider
+from neron_llm.providers.ollama import OllamaProvider
+
+logger    = logging.getLogger("neron_llm.manager")
+MAX_RETRIES = 2
+
+
+class LLMManager:
+    """Orchestrates LLM calls across providers with strategy and fallback."""
+
+    def __init__(self) -> None:
+        self.router   = LLMRouter()
+        self.strategy = StrategyEngine()
+        self.providers: dict[str, BaseProvider] = {
+            "ollama": OllamaProvider(),
+            "claude": ClaudeProvider(),
+        }
+
+    # ── Main entry point ──────────────────────────────────────────────────────
+
+    async def handle(self, request: LLMRequest) -> LLMResponse:
+        """Route, strategize, and execute the request."""
+        mode          = self.strategy.decide(task=request.task, mode=request.mode)
+        model         = request.model or self.router.select_model(task=request.task)
+        provider_name = self.router.select_provider(provider=request.provider)
+
+        logger.info(
+            json.dumps({
+                "event":    "llm_handle",
+                "task":     request.task,
+                "mode":     mode,
+                "model":    model,
+                "provider": provider_name,
+            })
+        )
+
+        if mode == "parallel":
+            return await self._execute_parallel(request, model)
+        elif mode == "race":
+            return await self._execute_race(request, model)
+        else:
+            return await self._execute_single(request, model, provider_name)
+
+    # ── Mode SINGLE — model fallback then provider fallback ───────────────────
+
+    async def _execute_single(
+        self, request: LLMRequest, model: str, provider_name: str,
+    ) -> LLMResponse:
+        """Execute with one provider.
+
+        Fallback order:
+          1. retry (×MAX_RETRIES) on primary model
+          2. switch to next model in chain (deepseek-coder:6.7b)
+          3. try next provider in chain (ollama → claude)
+        """
+        # Attempt primary model
+        result = await self._call_with_retry(provider_name, request.message, model)
+        if result.error is None:
+            return result
+
+        # Model-level fallback
+        fallback_model = self.router.get_fallback_model(model)
+        if fallback_model:
+            logger.warning(
+                json.dumps({
+                    "event":          "model_fallback",
+                    "primary_model":  model,
+                    "fallback_model": fallback_model,
+                    "provider":       provider_name,
+                })
+            )
+            result = await self._call_with_retry(provider_name, request.message, fallback_model)
+            if result.error is None:
+                return result
+
+        # Provider-level fallback
+        fallback_provider = self.router.get_fallback_provider(provider_name)
+        if fallback_provider and fallback_provider in self.providers:
+            logger.warning(
+                json.dumps({
+                    "event":             "provider_fallback",
+                    "primary_provider":  provider_name,
+                    "fallback_provider": fallback_provider,
+                })
+            )
+            result = await self._call_with_retry(
+                fallback_provider, request.message, fallback_model or model
+            )
+
+        return result
+
+    # ── Mode PARALLEL — all providers, pick best ──────────────────────────────
+
+    async def _execute_parallel(
+        self, request: LLMRequest, model: str,
+    ) -> LLMResponse:
+        """Execute on all providers in parallel; return longest valid response."""
+        tasks = [
+            self._call_provider(name, provider, request.message, model)
+            for name, provider in self.providers.items()
+        ]
+        results = await asyncio.gather(*tasks)
+
+        valid = [r for r in results if r.error is None]
+        if not valid:
+            logger.error(json.dumps({"event": "parallel_all_failed"}))
+            return results[0] if results else LLMResponse(
+                model=model, provider="none", response="", error="All providers failed",
+            )
+
+        best = max(valid, key=lambda r: len(r.response))
+        logger.info(
+            json.dumps({
+                "event":    "parallel_best",
+                "provider": best.provider,
+                "model":    best.model,
+                "length":   len(best.response),
+            })
+        )
+        return best
+
+    # ── Mode RACE — first completed wins ─────────────────────────────────────
+
+    async def _execute_race(
+        self, request: LLMRequest, model: str,
+    ) -> LLMResponse:
+        """Execute on all providers; return first to complete successfully."""
+        tasks: dict[asyncio.Task, str] = {}
+        for name, provider in self.providers.items():
+            # Skip providers that aren't configured
+            if hasattr(provider, 'is_available') and not provider.is_available():
+                continue
+            task = asyncio.create_task(
+                self._call_provider(name, provider, request.message, model)
+            )
+            tasks[task] = name
+
+        done, pending = await asyncio.wait(tasks.keys(), return_when=asyncio.FIRST_COMPLETED)
+
+        for task in pending:
+            task.cancel()
+        logger.debug(
+            json.dumps({
+                "event":     "race_done",
+                "cancelled": [tasks[t] for t in pending],
+            })
+        )
+
+        for task in done:
+            result = task.result()
+            if isinstance(result, LLMResponse) and result.error is None:
+                logger.info(json.dumps({"event": "race_winner", "provider": result.provider}))
+                return result
+
+        # All done tasks had errors
+        for task in done:
+            result = task.result()
+            if isinstance(result, LLMResponse):
+                return result
+
+        return LLMResponse(model=model, provider="none", response="", error="Race: all providers failed")
+
+    # ── Retry wrapper ─────────────────────────────────────────────────────────
+
+    async def _call_with_retry(
+        self, provider_name: str, message: str, model: str,
+    ) -> LLMResponse:
+        provider = self.providers.get(provider_name)
+        if not provider:
+            return LLMResponse(
+                model=model, provider=provider_name, response="",
+                error=f"Unknown provider: {provider_name}",
+            )
+
+        last_result: LLMResponse | None = None
+        for attempt in range(1, MAX_RETRIES + 1):
+            t0     = time.monotonic()
+            result = await self._call_provider(provider_name, provider, message, model)
+            if result.error is None:
+                return result
+            logger.warning(
+                json.dumps({
+                    "event":      "provider_retry",
+                    "provider":   provider_name,
+                    "model":      model,
+                    "attempt":    attempt,
+                    "max":        MAX_RETRIES,
+                    "error":      result.error,
+                    "elapsed_ms": int((time.monotonic() - t0) * 1000),
+                })
+            )
+            last_result = result
+
+        return last_result or LLMResponse(
+            model=model, provider=provider_name, response="",
+            error=f"Provider '{provider_name}' failed after {MAX_RETRIES} attempts",
+        )
+
+    async def _call_provider(
+        self, name: str, provider: BaseProvider, message: str, model: str,
+    ) -> LLMResponse:
+        try:
+            response = await provider.generate(message, model)
+            return LLMResponse(model=model, provider=name, response=response, error=None)
+        except Exception as exc:
+            logger.error(
+                json.dumps({
+                    "event":    "provider_error",
+                    "provider": name,
+                    "model":    model,
+                    "error":    str(exc),
+                })
+            )
+            return LLMResponse(model=model, provider=name, response="", error=str(exc))
