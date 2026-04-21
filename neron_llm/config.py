@@ -1,8 +1,3 @@
-"""Configuration loader with memory cache for neron_llm.
-
-Reads from /etc/neron/server/neron.yaml once and caches in memory.
-Supports both 'routing' (v1.0) and 'model_map' (legacy) keys.
-"""
 
 from __future__ import annotations
 
@@ -14,7 +9,7 @@ import yaml
 
 logger = logging.getLogger("neron_llm.config")
 
-CONFIG_PATH = Path("/etc/neron/server/neron.yaml")
+CONFIG_PATH = Path("/etc/neron/neron.yaml")
 
 # Keys that are NOT model mappings (e.g. timeout) — filtered out of routing
 _ROUTING_META_KEYS = {"timeout", "default_provider"}
