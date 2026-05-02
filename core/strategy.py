@@ -27,7 +27,7 @@ class StrategyEngine:
         # Load yaml overrides at construction — config is cached by lru_cache
         self._strategies = dict(_DEFAULT_TASK_STRATEGIES)
         try:
-            from neron_llm.config import load_config
+            from ..config import load_config
             cfg_strategies: dict = load_config().get("strategy", {})
             valid_modes = {"single", "parallel", "race"}
             for task, mode in cfg_strategies.items():

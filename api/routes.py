@@ -50,7 +50,8 @@ _reload_lock = asyncio.Lock()
 # ── Authentication ─────────────────────────────────────────────────────────────
 
 _API_KEY_HEADER = APIKeyHeader(name="X-Neron-API-Key", auto_error=False)
-_NERON_API_KEY  = os.getenv("NERON_API_KEY", "")
+from llm.config import load_config as _load_config
+_NERON_API_KEY = os.getenv("NERON_API_KEY") or _load_config().get("neron", {}).get("api_key", "")
 
 if not _NERON_API_KEY:
     logger.warning(
