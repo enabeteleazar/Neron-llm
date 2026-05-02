@@ -1,14 +1,15 @@
-# neron-llm
+# neronOS_LLM - V2.0.0
+
 
 Microservice LLM unifié pour Néron. Abstrait les providers (Ollama, Claude) derrière une API FastAPI unique avec trois modes d'exécution.
 
 ## Modes
 
-| Mode | Comportement |
-|---|---|
-| `single` | Un seul provider, sélectionné par le router |
-| `parallel` | Tous les providers en `asyncio.gather` — tous les résultats |
-| `race` | `asyncio.FIRST_COMPLETED` — le plus rapide gagne, les autres annulés |
+| Mode       	| Comportement 								|
+|---         	|---									|
+| `single`   	| Un seul provider, sélectionné par le router 				|
+| `parallel` 	| Tous les providers en `asyncio.gather` — tous les résultats 		|
+| `race`	| `asyncio.FIRST_COMPLETED` — le plus rapide gagne, les autres annulés 	|
 
 ## Structure
 
