@@ -38,7 +38,7 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 # ── FastAPI app ───────────────────────────────────────────────────────────────
 
 app = FastAPI(
-    title       = "Neron LLM",
+    title       = "neronOS_LLM",
     description = "Microservice IA — routing modèles, abstraction providers",
     version     = "2.0.0",
 )

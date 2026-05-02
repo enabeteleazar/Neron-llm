@@ -1,7 +1,5 @@
 # neron-llm
 
-# neron-llm
-
 Microservice LLM unifié pour Néron. Abstrait les providers (Ollama, Claude) derrière une API FastAPI unique avec trois modes d'exécution.
 
 ## Modes
@@ -15,61 +13,83 @@ Microservice LLM unifié pour Néron. Abstrait les providers (Ollama, Claude) de
 ## Structure
 
 ```
-neron_llm/
-├── config.py              # Lecture /etc/neron/server/neron.yaml
-├── main.py                # Point d'entrée uvicorn
+llm/
+├── app.py                # Point d'entrée uvicorn
+├── config.py             # Lecture /etc/neron/neron.yaml (lru_cache)
 ├── core/
-│   ├── types.py           # LLMRequest / LLMResponse (Pydantic)
-│   ├── router.py          # Routage tâche → modèle/provider
-│   └── manager.py         # Orchestrateur async (single/parallel/race)
+│   ├── types.py          # LLMRequest / LLMResponse (Pydantic)
+│   ├── router.py         # Routage tâche → modèle/provider
+│   ├── strategy.py       # StrategyEngine (single/parallel/race par task_type)
+│   └── manager.py        # Orchestrateur async
 ├── providers/
-│   ├── base.py            # ABC async BaseProvider
-│   ├── ollama.py          # Ollama via httpx async
-│   └── claude.py          # Anthropic Claude via httpx async
+│   ├── base.py           # ABC async BaseProvider
+│   ├── ollama.py         # Ollama via httpx async
+│   └── claude.py         # Anthropic Claude via httpx async
 └── api/
-    └── server.py          # FastAPI app
+    └── routes.py         # Routeur FastAPI — /llm/*
 cli/
-└── neronctl.py            # CLI Typer
+└── neronctl.py           # CLI Typer
 tests/
-└── test_parallel.py       # Preuve du parallélisme
+└── test_parallel.py      # Tests parallélisme / race / fallback
 ```
 
 ## Config neron.yaml
 
 ```yaml
+neron:
+  api_key: <clé auth X-Neron-API-Key>   # auth activée si présente
+
 llm:
   model: llama3.2:1b
   fallback_model: llama3.2:1b
   host: http://localhost:11434
   timeout: 120
   default_provider: ollama
-  claude_api_key: sk-ant-...       # ou variable ANTHROPIC_API_KEY
   claude_max_tokens: 1024
   model_map:
     default: llama3.2:1b
     code: deepseek-coder:latest
     summary: llama3.2:1b
+
+strategy:
+  chat: single       # single | parallel | race
+  code: single
+  summary: parallel
 ```
 
 ## Lancement
 
 ```bash
 pip install -r requirements.txt
-uvicorn neron_llm.main:app --host 0.0.0.0 --port 8765
+uvicorn llm.app:app --host 0.0.0.0 --port 8765
+```
+
+Depuis `/etc/neron/` avec le venv activé. `PYTHONPATH=/etc/neron/llm` est défini dans le service systemd.
+
+## Authentification
+
+Clé lue depuis `neron.api_key` dans `neron.yaml`, avec fallback sur la variable d'env `NERON_API_KEY`. Si aucune clé n'est définie, l'auth est désactivée (mode dev).
+
+```bash
+curl -X POST http://localhost:8765/llm/generate \
+  -H "Content-Type: application/json" \
+  -H "X-Neron-API-Key: <clé>" \
+  -d '{"prompt": "Dis bonjour", "task_type": "chat"}'
 ```
 
 ## API
 
 ```
-POST /chat
+POST /llm/generate
 {
-  "message": "Explique asyncio",
-  "task": "default",
-  "mode": "single",       # single | parallel | race
-  "provider": null        # forcer ollama ou claude
+  "prompt":    "Explique asyncio",
+  "task_type": "chat",             # détermine le mode via StrategyEngine
+  "mode":      "single"            # override optionnel : single | parallel | race
 }
 
-GET /health
+GET  /llm/health
+GET  /llm/metrics
+POST /llm/reload    # recharge neron.yaml sans redémarrage
 ```
 
 ## CLI
@@ -84,3 +104,4 @@ python -m cli.neronctl "Réponds vite" --mode race
 
 ```bash
 pytest tests/ -v
+```
