@@ -1,8 +1,11 @@
+<<<<<<< HEAD:neron_llm/config.py
+=======
 """Configuration loader with memory cache for llm.
 
 Reads from /etc/neron/neron.yaml once and caches in memory.
 Supports both 'routing' (v1.0) and 'model_map' (legacy) keys.
 """
+>>>>>>> release/v2.0.0:config.py
 
 from __future__ import annotations
 

@@ -25,6 +25,10 @@ ENV/
 # LOGS
 # =========================
 *.log
+<<<<<<< HEAD
+uvicorn.sh
+
+=======
 logs/
 *.out
 *.err
@@ -104,3 +108,4 @@ venv/
 !/client/homeassistant/.keep
 .claude
 .copilot
+>>>>>>> release/v2.0.0

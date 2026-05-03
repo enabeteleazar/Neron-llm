@@ -1,5 +1,9 @@
+<<<<<<< HEAD
+# neron-llm - v2.0.0
+=======
 # neronOS_LLM - V2.0.0
 
+>>>>>>> release/v2.0.0
 
 Microservice LLM unifié pour Néron. Abstrait les providers (Ollama, Claude) derrière une API FastAPI unique avec trois modes d'exécution.
 
