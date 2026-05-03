@@ -1,11 +1,4 @@
-<<<<<<< HEAD:neron_llm/config.py
-=======
-"""Configuration loader with memory cache for llm.
-
-Reads from /etc/neron/neron.yaml once and caches in memory.
-Supports both 'routing' (v1.0) and 'model_map' (legacy) keys.
-"""
->>>>>>> release/v2.0.0:config.py
+# Configuration loader with memory cache for llm.
 
 from __future__ import annotations
 
@@ -24,13 +17,13 @@ _ROUTING_META_KEYS = {"timeout", "default_provider"}
 
 
 def load_config() -> dict:
-    """Load and cache the full YAML configuration."""
+    # Load and cache the full YAML configuration.# 
     return _load_config_cached()
 
 
 @lru_cache(maxsize=1)
 def _load_config_cached() -> dict:
-    """Load YAML config once and cache in memory."""
+    # Load YAML config once and cache in memory.# 
     try:
         with open(CONFIG_PATH, "r") as f:
             config = yaml.safe_load(f) or {}
@@ -45,12 +38,12 @@ def _load_config_cached() -> dict:
 
 
 def get_llm_config() -> dict:
-    """Get the 'llm' section of the config."""
+    # Get the 'llm' section of the config.# 
     return load_config().get("llm", {})
 
 
 def get_routing_config() -> dict:
-    """Get the routing section. Prefers 'routing' key, falls back to 'model_map'."""
+    # Get the routing section. Prefers 'routing' key, falls back to 'model_map'.# 
     config = load_config()
     routing = config.get("routing", {})
     if not routing:
@@ -60,7 +53,7 @@ def get_routing_config() -> dict:
 
 
 def reload_config() -> dict:
-    """Force reload the configuration (clears LRU cache)."""
+    # Force reload the configuration (clears LRU cache).# 
     _load_config_cached.cache_clear()
     new_config = load_config()
     logger.info("Configuration reloaded from %s", CONFIG_PATH)
