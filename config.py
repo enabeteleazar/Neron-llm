@@ -1,3 +1,11 @@
+<<<<<<< HEAD:neron_llm/config.py
+=======
+"""Configuration loader with memory cache for llm.
+
+Reads from /etc/neron/neron.yaml once and caches in memory.
+Supports both 'routing' (v1.0) and 'model_map' (legacy) keys.
+"""
+>>>>>>> release/v2.0.0:config.py
 
 from __future__ import annotations
 
@@ -7,7 +15,7 @@ from pathlib import Path
 
 import yaml
 
-logger = logging.getLogger("neron_llm.config")
+logger = logging.getLogger("llm.config")
 
 CONFIG_PATH = Path("/etc/neron/neron.yaml")
 

@@ -1,12 +1,6 @@
-"""neron_llm/main.py
-Neron LLM microservice — main entry point.
+# llm/app.py
+# Neron LLM microservice — main entry point.
 
-v2.0: structured JSON logging, startup/shutdown events.
-
-Usage:
-    uvicorn neron_llm.main:app --host 127.0.0.1 --port 8765
-    uvicorn neron_llm.main:app --host 127.0.0.1 --port 8765 --workers 1
-"""
 from __future__ import annotations
 
 import json
@@ -14,7 +8,7 @@ import logging
 
 from fastapi import FastAPI
 
-from neron_llm.api.routes import router
+from llm.api.routes import router
 
 # ── Structured JSON logging ───────────────────────────────────────────────────
 
@@ -39,12 +33,12 @@ _handler = logging.StreamHandler()
 _handler.setFormatter(_JsonFormatter())
 logging.basicConfig(level=logging.INFO, handlers=[_handler])
 logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
-
+logging.getLogger("httpx").setLevel(logging.WARNING)
 
 # ── FastAPI app ───────────────────────────────────────────────────────────────
 
 app = FastAPI(
-    title       = "Neron LLM",
+    title       = "neronOS_LLM",
     description = "Microservice IA — routing modèles, abstraction providers",
     version     = "2.0.0",
 )
@@ -54,22 +48,24 @@ app.include_router(router)
 
 @app.on_event("startup")
 async def on_startup() -> None:
-    logging.getLogger("neron_llm").info(
-        json.dumps({"event": "neron_llm_started", "version": "2.0.0", "port": 8765})
+    logging.getLogger("llm").info(
+        json.dumps({"event": "llm_started", "version": "2.0.0", "port": 8765})
     )
 
 
 @app.on_event("shutdown")
 async def on_shutdown() -> None:
-    logging.getLogger("neron_llm").info(
-        json.dumps({"event": "neron_llm_stopped"})
+    from llm.api.routes import manager
+    await manager.aclose()
+    logging.getLogger("llm").info(
+        json.dumps({"event": "llm_stopped"})
     )
 
 
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(
-        "neron_llm.main:app",
+        "llm.main:app",
         host    = "127.0.0.1",
         port    = 8765,
         workers = 1,

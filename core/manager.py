@@ -1,33 +1,26 @@
-"""neron_llm/core/manager.py
-LLM Manager — orchestration engine with single/parallel/race modes.
+# neron_llm/core/manager.py
+# LLM Manager — orchestration engine with single/parallel/race modes.
 
-v2.0 changes:
-  • _execute_single() now tries model fallback chain BEFORE provider fallback
-    (qwen2.5-coder:14b → deepseek-coder:6.7b → provider fallback → error)
-  • Correlation ID (x-neron-request-id) forwarded to provider calls
-  • Structured JSON error logging
-
-Unchanged:
-  • parallel / race modes
-  • retry logic (MAX_RETRIES = 2)
-  • provider fallback chain (ollama → claude)
-"""
 from __future__ import annotations
 
 import asyncio
 import json
 import logging
+import random
 import time
 
-from neron_llm.core.router   import LLMRouter
-from neron_llm.core.strategy import StrategyEngine
-from neron_llm.core.types    import LLMRequest, LLMResponse
-from neron_llm.providers.base   import BaseProvider
-from neron_llm.providers.claude import ClaudeProvider
-from neron_llm.providers.ollama import OllamaProvider
+from llm.core.router   import LLMRouter
+from llm.core.strategy import StrategyEngine
+from llm.core.types    import LLMRequest, LLMResponse
+from llm.providers.base   import BaseProvider
+from llm.providers.claude import ClaudeProvider
+from llm.providers.ollama import OllamaProvider
 
-logger    = logging.getLogger("neron_llm.manager")
-MAX_RETRIES = 2
+logger      = logging.getLogger("llm.manager")
+MAX_RETRIES      = 2
+RETRY_BASE_DELAY = 1.0   # secondes — délai avant la 2e tentative
+RETRY_MAX_DELAY  = 10.0  # secondes — plafond (croissance exponentielle)
+RETRY_JITTER     = 0.3   # secondes — aléatoire ajouté pour éviter les rafales
 
 
 class LLMManager:
@@ -40,6 +33,17 @@ class LLMManager:
             "ollama": OllamaProvider(),
             "claude": ClaudeProvider(),
         }
+
+    async def aclose(self) -> None:
+        """Close all provider HTTP clients gracefully on shutdown."""
+        for name, provider in self.providers.items():
+            try:
+                await provider.aclose()
+                logger.debug(json.dumps({"event": "provider_closed", "provider": name}))
+            except Exception as exc:
+                logger.warning(
+                    json.dumps({"event": "provider_close_error", "provider": name, "error": str(exc)})
+                )
 
     # ── Main entry point ──────────────────────────────────────────────────────
 
@@ -149,14 +153,21 @@ class LLMManager:
     async def _execute_race(
         self, request: LLMRequest, model: str,
     ) -> LLMResponse:
-        """Execute on all providers; return first to complete successfully."""
+        """Execute on all providers; return first to complete successfully.
+
+        Uses race_timeout (default 30s) instead of the full generation timeout
+        to ensure fast failure and avoid blocking the event loop.
+        """
         tasks: dict[asyncio.Task, str] = {}
         for name, provider in self.providers.items():
             # Skip providers that aren't configured
             if hasattr(provider, 'is_available') and not provider.is_available():
                 continue
+            # Pass race_timeout so providers fail fast instead of blocking for 300s
+            race_timeout = getattr(provider, "_timeout_race", None)
             task = asyncio.create_task(
-                self._call_provider(name, provider, request.message, model)
+                self._call_provider(name, provider, request.message, model,
+                                    timeout=race_timeout)
             )
             tasks[task] = name
 
@@ -201,8 +212,24 @@ class LLMManager:
         for attempt in range(1, MAX_RETRIES + 1):
             t0     = time.monotonic()
             result = await self._call_provider(provider_name, provider, message, model)
+            elapsed_ms = int((time.monotonic() - t0) * 1000)
+
             if result.error is None:
                 return result
+
+            # Délai avant la prochaine tentative.
+            # Formule : min(base × 2^(attempt-1) + jitter, max)
+            #   attempt 1 → ~1.0s + jitter
+            #   attempt 2 → ~2.0s + jitter
+            # Pas de sleep après la dernière tentative — inutile d'attendre
+            # avant de passer au fallback ou de retourner l'erreur.
+            will_retry = attempt < MAX_RETRIES
+            wait_s = (
+                min(RETRY_BASE_DELAY * (2 ** (attempt - 1)) + random.uniform(0, RETRY_JITTER),
+                    RETRY_MAX_DELAY)
+                if will_retry else 0.0
+            )
+
             logger.warning(
                 json.dumps({
                     "event":      "provider_retry",
@@ -211,10 +238,14 @@ class LLMManager:
                     "attempt":    attempt,
                     "max":        MAX_RETRIES,
                     "error":      result.error,
-                    "elapsed_ms": int((time.monotonic() - t0) * 1000),
+                    "elapsed_ms": elapsed_ms,
+                    "wait_ms":    int(wait_s * 1000),
                 })
             )
             last_result = result
+
+            if will_retry:
+                await asyncio.sleep(wait_s)
 
         return last_result or LLMResponse(
             model=model, provider=provider_name, response="",
@@ -223,17 +254,27 @@ class LLMManager:
 
     async def _call_provider(
         self, name: str, provider: BaseProvider, message: str, model: str,
+        timeout: float | None = None,
     ) -> LLMResponse:
         try:
-            response = await provider.generate(message, model)
+            response = await provider.generate(message, model, timeout=timeout)
             return LLMResponse(model=model, provider=name, response=response, error=None)
         except Exception as exc:
+            exc_type = type(exc).__name__
+            # str(exc) is empty for httpx timeout/network exceptions — use repr fallback
+            exc_msg  = str(exc) or repr(exc)
+            # Include request URL for httpx exceptions (have a .request attribute)
+            request_url = str(getattr(getattr(exc, "request", None), "url", ""))
+
             logger.error(
                 json.dumps({
                     "event":    "provider_error",
                     "provider": name,
                     "model":    model,
-                    "error":    str(exc),
+                    "exc_type": exc_type,
+                    "error":    exc_msg,
+                    **({"request_url": request_url} if request_url else {}),
                 })
             )
-            return LLMResponse(model=model, provider=name, response="", error=str(exc))
+            error_str = f"{exc_type}: {exc_msg}" if exc_msg else exc_type
+            return LLMResponse(model=model, provider=name, response="", error=error_str)
